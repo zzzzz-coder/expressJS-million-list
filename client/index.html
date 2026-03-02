@@ -1,0 +1,253 @@
+
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>Production Million List</title>
+    <style>
+      * { box-sizing:border-box }
+
+      body {
+        display:flex;
+        font-family:Arial;
+        margin:0;
+        height:100vh;
+      }
+
+      .window {
+        width:50%;
+        display:flex;
+        flex-direction:column;
+        border-right:1px solid #ccc;
+        padding:10px;
+      }
+
+      .list {
+        height:400px;
+        overflow-y:auto;
+        border:1px solid #ccc;
+      }
+
+      .item {
+        padding:8px;
+        border-bottom:1px solid #eee;
+        cursor:pointer;
+        min-height:30px;
+      }
+
+      .item.dragging {
+        opacity:0.5;
+      }
+
+      input {
+        width:100%;
+        margin-bottom:8px;
+        padding:6px;
+      }
+
+      button {
+        margin-bottom:8px;
+        padding:6px;
+      }
+    </style>
+  </head>
+  <body>
+
+    <div class="window" id="left">
+      <input id="leftSearch" placeholder="Search ID..." />
+      <input id="newIdInput" placeholder="New ID..." />
+      <button onclick="addId()">Добавить</button>
+      <div id="addMessage" style="color:green;margin:5px 0;"></div>
+      <div class="list" id="leftList"></div>
+    </div>
+
+    <div class="window" id="right">
+      <input id="rightSearch" placeholder="Search ID..." />
+      <div class="list" id="rightList"></div>
+    </div>
+
+    <script>
+      let leftOffset=0,rightOffset=0;
+      let leftSearch='',rightSearch='';
+      let leftLoading=false,rightLoading=false;
+      let leftFinished=false,rightFinished=false;
+      let stateVersion=0;
+      const leftList=document.getElementById('leftList');
+      const rightList=document.getElementById('rightList');
+      const leftSearchInput=document.getElementById('leftSearch');
+      const rightSearchInput=document.getElementById('rightSearch');
+
+      setInterval(async ()=>{
+        const r=await fetch('/api/version');
+        const d=await r.json();
+
+        if(d.version!==stateVersion){
+          stateVersion=d.version;
+          fetchLeft(true);
+          fetchRight(true);
+        }
+      },1000);
+
+      async function fetchLeft(reset=false){
+        if(reset){
+          leftOffset = 0;
+          leftFinished = false;
+          leftList.innerHTML = '';
+        }
+
+        if(leftLoading || leftFinished) return;
+        leftLoading = true;
+        const r = await fetch(`/api/left?offset=${leftOffset}&search=${leftSearch}`);
+        const d = await r.json();
+
+        if(d.items.length < 20) leftFinished = true;
+        d.items.forEach(renderLeftItem);
+        leftOffset += d.items.length;
+        leftLoading = false;
+      }
+
+      async function fetchRight(reset=false){
+        if(reset){
+          rightOffset = 0;
+          rightFinished = false;
+          rightList.innerHTML = '';
+        }
+
+        if(rightLoading || rightFinished) return;
+
+        rightLoading = true;
+
+        const r = await fetch(`/api/right?offset=${rightOffset}&search=${rightSearch}`);
+        const d = await r.json();
+
+        if(d.items.length < 20) rightFinished = true;
+
+        d.items.forEach(renderRightItem);
+        rightOffset += d.items.length;
+        rightLoading = false;
+      }
+
+      function renderLeftItem(id){
+        const div=document.createElement('div');
+        div.className='item';
+        div.textContent=id;
+        div.onclick=()=>select(id);
+        leftList.appendChild(div);
+      }
+
+      function renderRightItem(id){
+        const div=document.createElement('div');
+        div.className='item';
+        div.textContent=id;
+        div.draggable=true;
+        div.addEventListener('dragstart',()=>div.classList.add('dragging'));
+        div.addEventListener('dragend',()=>{
+          div.classList.remove('dragging');
+          saveOrder();
+        });
+        rightList.appendChild(div);
+      }
+
+      rightList.addEventListener('dragover',e=>{
+      e.preventDefault();
+      const dragging=document.querySelector('.dragging');
+      const after=[...rightList.querySelectorAll('.item:not(.dragging)')]
+        .find(el=>e.clientY<=el.getBoundingClientRect().top+el.offsetHeight/2);
+      if(after==null) rightList.appendChild(dragging);
+      else rightList.insertBefore(dragging,after);
+      });
+
+      let reorderTimer=null;
+      function saveOrder(){
+        clearTimeout(reorderTimer);
+        reorderTimer=setTimeout(async()=>{
+          const order=[...rightList.children].map(el=>Number(el.textContent));
+          await fetch('/api/reorder',{
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({order})
+          });
+        },1000);
+      }
+
+      async function select(id){
+        await fetch('/api/select',{
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({ids:[id]})
+        });
+      }
+
+      async function addId(){
+        const input=document.getElementById('newIdInput');
+        const message=document.getElementById('addMessage');
+        const value=input.value.trim();
+
+        if(!/^\d+$/.test(value)){
+          message.textContent="Введите числовой ID";
+          return;
+        }
+
+        const r=await fetch('/api/add-id',{
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({id:Number(value)})
+        });
+
+        const d=await r.json();
+
+        if(d.error){
+          message.textContent=d.error;
+        }else{
+          message.textContent="Элемент успешно создан";
+          input.value='';
+          fetchLeft(true);
+        }
+
+        setTimeout(()=>message.textContent='',3000);
+      }
+
+      let leftTimer=null,rightTimer=null;
+
+      leftSearchInput.addEventListener('input',()=>{
+        clearTimeout(leftTimer);
+        leftTimer=setTimeout(()=>{
+          leftSearch=leftSearchInput.value;
+          fetchLeft(true);
+        },3000);
+      });
+
+      leftSearchInput.addEventListener('blur',()=>{
+        leftSearch=leftSearchInput.value;
+        fetchLeft(true);
+      });
+
+      rightSearchInput.addEventListener('input',()=>{
+        clearTimeout(rightTimer);
+        rightTimer=setTimeout(()=>{
+          rightSearch=rightSearchInput.value;
+          fetchRight(true);
+        },3000);
+      });
+
+      rightSearchInput.addEventListener('blur',()=>{
+        rightSearch=rightSearchInput.value;
+        fetchRight(true);
+      });
+
+      function attachInfiniteScroll(container, fetchFn){
+        container.addEventListener('scroll', ()=>{
+          const nearBottom =
+            container.scrollTop + container.clientHeight
+            >= container.scrollHeight - 10;
+          if(nearBottom){
+            fetchFn();
+          }
+        });
+      }
+
+      attachInfiniteScroll(leftList, fetchLeft);
+      attachInfiniteScroll(rightList, fetchRight);
+    </script>
+  </body>
+</html>
